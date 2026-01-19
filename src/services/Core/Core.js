@@ -14,7 +14,7 @@ function Core(args) {
     let starting = false;
     let transport = null;
 
-    // Start with preinstalled addons
+    // Start with preinstalled addons in memory
     let installedAddons = [...PREINSTALLED_ADDONS];
 
     const events = new EventEmitter();
@@ -43,48 +43,44 @@ function Core(args) {
         active: {
             configurable: false,
             enumerable: true,
-            get: function() {
-                return active;
-            }
+            get: function() { return active; }
         },
         error: {
             configurable: false,
             enumerable: true,
-            get: function() {
-                return error;
-            }
+            get: function() { return error; }
         },
         starting: {
             configurable: false,
             enumerable: true,
-            get: function() {
-                return starting;
-            }
+            get: function() { return starting; }
         },
         transport: {
             configurable: false,
             enumerable: true,
-            get: function() {
-                return transport;
-            }
+            get: function() { return transport; }
         },
         installedAddons: {
             configurable: false,
             enumerable: true,
-            get: function() {
-                return installedAddons;
-            }
+            get: function() { return installedAddons; }
         }
     });
 
     // Start Core Transport
     this.start = function() {
-        if (active || error instanceof Error || starting) {
-            return;
-        }
+        if (active || error instanceof Error || starting) return;
 
         starting = true;
         transport = new CoreTransport(args);
+
+        // --- PATCH: Register preinstalled addons with transport ---
+        PREINSTALLED_ADDONS.forEach(url => {
+            if (transport && typeof transport.registerAddons === 'function') {
+                transport.registerAddons(url);
+            }
+        });
+
         transport.on('init', onTransportInit);
         transport.on('error', onTransportError);
         onStateChanged();
@@ -106,6 +102,7 @@ function Core(args) {
     this.on = function(name, listener) {
         events.on(name, listener);
     };
+
     this.off = function(name, listener) {
         events.off(name, listener);
     };
@@ -114,6 +111,9 @@ function Core(args) {
     this.addAddon = function(url) {
         if (!installedAddons.includes(url)) {
             installedAddons.push(url);
+            if (transport && typeof transport.registerAddons === 'function') {
+                transport.registerAddons(url); // register dynamically
+            }
             onStateChanged();
         }
     };
