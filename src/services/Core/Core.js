@@ -3,11 +3,19 @@
 const EventEmitter = require('eventemitter3');
 const CoreTransport = require('./CoreTransport');
 
+// Preinstalled addons URLs
+const PREINSTALLED_ADDONS = [
+    "https://torrentio.strem.fun/lite/manifest.json"
+];
+
 function Core(args) {
     let active = false;
     let error = null;
     let starting = false;
     let transport = null;
+
+    // Start with preinstalled addons
+    let installedAddons = [...PREINSTALLED_ADDONS];
 
     const events = new EventEmitter();
 
@@ -17,6 +25,7 @@ function Core(args) {
         starting = false;
         onStateChanged();
     }
+
     function onTransportError(args) {
         console.error(args);
         active = false;
@@ -25,6 +34,7 @@ function Core(args) {
         onStateChanged();
         transport = null;
     }
+
     function onStateChanged() {
         events.emit('stateChanged');
     }
@@ -57,9 +67,17 @@ function Core(args) {
             get: function() {
                 return transport;
             }
+        },
+        installedAddons: {
+            configurable: false,
+            enumerable: true,
+            get: function() {
+                return installedAddons;
+            }
         }
     });
 
+    // Start Core Transport
     this.start = function() {
         if (active || error instanceof Error || starting) {
             return;
@@ -71,6 +89,8 @@ function Core(args) {
         transport.on('error', onTransportError);
         onStateChanged();
     };
+
+    // Stop Core Transport
     this.stop = function() {
         active = false;
         error = null;
@@ -81,11 +101,21 @@ function Core(args) {
             transport = null;
         }
     };
+
+    // Event listeners
     this.on = function(name, listener) {
         events.on(name, listener);
     };
     this.off = function(name, listener) {
         events.off(name, listener);
+    };
+
+    // Optional: allow adding more addons at runtime
+    this.addAddon = function(url) {
+        if (!installedAddons.includes(url)) {
+            installedAddons.push(url);
+            onStateChanged();
+        }
     };
 }
 
