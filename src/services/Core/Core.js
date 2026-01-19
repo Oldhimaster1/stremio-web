@@ -3,10 +3,86 @@
 const EventEmitter = require('eventemitter3');
 const CoreTransport = require('./CoreTransport');
 
-// Preinstalled addons URLs
-const PREINSTALLED_ADDONS = [
-    "https://torrentio.strem.fun/lite/manifest.json"
+const DEFAULT_PREINSTALLED_ADDON_URLS = [
+    // Torrentio Lite
+    'https://torrentio.strem.fun/lite/manifest.json'
 ];
+
+function getPreinstalledAddonUrls() {
+    const raw = typeof process !== 'undefined' && process.env && typeof process.env.PREINSTALLED_ADDONS === 'string'
+        ? process.env.PREINSTALLED_ADDONS
+        : '';
+    const fromEnv = raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+    return fromEnv.length > 0 ? fromEnv : DEFAULT_PREINSTALLED_ADDON_URLS;
+}
+
+async function installAddonFromTransportUrl(transport, transportUrl) {
+    if (!transport || typeof transport.dispatch !== 'function' || typeof transport.getState !== 'function') {
+        return false;
+    }
+
+    // Load the addon details model so Core fetches the manifest and exposes a full addon object.
+    // Then dispatch InstallAddon with the resolved addon payload.
+    const model = 'addon_details';
+    const actionLoad = {
+        action: 'Load',
+        args: {
+            model: 'AddonDetails',
+            args: { transportUrl }
+        }
+    };
+
+    return new Promise((resolve) => {
+        let finished = false;
+
+        const cleanup = () => {
+            if (finished) return;
+            finished = true;
+            try { transport.off('NewState', onNewState); } catch {}
+            try { transport.dispatch({ action: 'Unload' }, model); } catch {}
+        };
+
+        const onNewState = async (models) => {
+            if (!Array.isArray(models) || models.indexOf(model) === -1) return;
+            try {
+                const state = await transport.getState(model);
+                const remoteAddon = state && state.remoteAddon;
+                const content = remoteAddon && remoteAddon.content;
+
+                if (content && content.type === 'Ready' && content.content) {
+                    transport.dispatch({
+                        action: 'Ctx',
+                        args: {
+                            action: 'InstallAddon',
+                            args: content.content
+                        }
+                    });
+                    cleanup();
+                    resolve(true);
+                } else if (content && content.type === 'Err') {
+                    cleanup();
+                    resolve(false);
+                }
+            } catch (e) {
+                cleanup();
+                resolve(false);
+            }
+        };
+
+        try {
+            transport.on('NewState', onNewState);
+            transport.dispatch(actionLoad, model);
+            // Kick an immediate check in case state is already available.
+            Promise.resolve().then(() => onNewState([model]));
+        } catch (e) {
+            cleanup();
+            resolve(false);
+        }
+    });
+}
 
 function Core(args) {
     let active = false;
@@ -14,8 +90,7 @@ function Core(args) {
     let starting = false;
     let transport = null;
 
-    // Start with preinstalled addons in memory
-    let installedAddons = [...PREINSTALLED_ADDONS];
+    let preinstallStarted = false;
 
     const events = new EventEmitter();
 
@@ -24,8 +99,21 @@ function Core(args) {
         error = null;
         starting = false;
         onStateChanged();
-    }
 
+        if (!preinstallStarted) {
+            preinstallStarted = true;
+            const urls = getPreinstalledAddonUrls();
+            Promise.resolve().then(async () => {
+                for (const url of urls) {
+                    try {
+                        // Best-effort; do not block app startup.
+                        // If the addon is already installed, Core should no-op.
+                        await installAddonFromTransportUrl(transport, url);
+                    } catch {}
+                }
+            });
+        }
+    }
     function onTransportError(args) {
         console.error(args);
         active = false;
@@ -34,7 +122,6 @@ function Core(args) {
         onStateChanged();
         transport = null;
     }
-
     function onStateChanged() {
         events.emit('stateChanged');
     }
@@ -43,50 +130,44 @@ function Core(args) {
         active: {
             configurable: false,
             enumerable: true,
-            get: function() { return active; }
+            get: function() {
+                return active;
+            }
         },
         error: {
             configurable: false,
             enumerable: true,
-            get: function() { return error; }
+            get: function() {
+                return error;
+            }
         },
         starting: {
             configurable: false,
             enumerable: true,
-            get: function() { return starting; }
+            get: function() {
+                return starting;
+            }
         },
         transport: {
             configurable: false,
             enumerable: true,
-            get: function() { return transport; }
-        },
-        installedAddons: {
-            configurable: false,
-            enumerable: true,
-            get: function() { return installedAddons; }
+            get: function() {
+                return transport;
+            }
         }
     });
 
-    // Start Core Transport
     this.start = function() {
-        if (active || error instanceof Error || starting) return;
+        if (active || error instanceof Error || starting) {
+            return;
+        }
 
         starting = true;
         transport = new CoreTransport(args);
-
-        // --- PATCH: Register preinstalled addons with transport ---
-        PREINSTALLED_ADDONS.forEach(url => {
-            if (transport && typeof transport.registerAddons === 'function') {
-                transport.registerAddons(url);
-            }
-        });
-
         transport.on('init', onTransportInit);
         transport.on('error', onTransportError);
         onStateChanged();
     };
-
-    // Stop Core Transport
     this.stop = function() {
         active = false;
         error = null;
@@ -97,25 +178,11 @@ function Core(args) {
             transport = null;
         }
     };
-
-    // Event listeners
     this.on = function(name, listener) {
         events.on(name, listener);
     };
-
     this.off = function(name, listener) {
         events.off(name, listener);
-    };
-
-    // Optional: allow adding more addons at runtime
-    this.addAddon = function(url) {
-        if (!installedAddons.includes(url)) {
-            installedAddons.push(url);
-            if (transport && typeof transport.registerAddons === 'function') {
-                transport.registerAddons(url); // register dynamically
-            }
-            onStateChanged();
-        }
     };
 }
 
